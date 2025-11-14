@@ -1,0 +1,322 @@
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from datetime import datetime
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from sklearn.metrics import classification_report, confusion_matrix
+import json
+
+# Configuration
+class Config:
+    # Paths
+    TRAIN_DIR = 'dataset/train'
+    VALID_DIR = 'dataset/valid'
+    MODEL_DIR = 'models'
+    RESULTS_DIR = 'results'
+    
+    # Model parameters
+    IMG_SIZE = 224
+    BATCH_SIZE = 32
+    EPOCHS = 25
+    LEARNING_RATE = 0.001
+    
+    # Create directories if they don't exist
+    os.makedirs(MODEL_DIR, exist_ok=True)
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+
+config = Config()
+
+print("=" * 60)
+print("🌿 LEAF DISEASE DETECTION - TRAINING SCRIPT")
+print("=" * 60)
+print(f"Start Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+print(f"TensorFlow Version: {tf.__version__}")
+print(f"GPU Available: {tf.config.list_physical_devices('GPU')}")
+print("=" * 60)
+
+# Step 1: Data Preparation
+print("\n[1/6] Preparing Data Generators...")
+
+train_datagen = ImageDataGenerator(
+    rescale=1./255,
+    rotation_range=30,
+    width_shift_range=0.2,
+    height_shift_range=0.2,
+    shear_range=0.2,
+    zoom_range=0.2,
+    horizontal_flip=True,
+    vertical_flip=True,
+    fill_mode='nearest'
+)
+
+valid_datagen = ImageDataGenerator(rescale=1./255)
+
+train_generator = train_datagen.flow_from_directory(
+    config.TRAIN_DIR,
+    target_size=(config.IMG_SIZE, config.IMG_SIZE),
+    batch_size=config.BATCH_SIZE,
+    class_mode='categorical',
+    shuffle=True
+)
+
+valid_generator = valid_datagen.flow_from_directory(
+    config.VALID_DIR,
+    target_size=(config.IMG_SIZE, config.IMG_SIZE),
+    batch_size=config.BATCH_SIZE,
+    class_mode='categorical',
+    shuffle=False
+)
+
+num_classes = train_generator.num_classes
+class_names = list(train_generator.class_indices.keys())
+
+print(f"✓ Training samples: {train_generator.samples}")
+print(f"✓ Validation samples: {valid_generator.samples}")
+print(f"✓ Number of classes: {num_classes}")
+print(f"✓ Class names saved: {len(class_names)} classes")
+
+# Save class names for later use
+with open(os.path.join(config.MODEL_DIR, 'class_names.json'), 'w') as f:
+    json.dump(class_names, f, indent=2)
+
+# Step 2: Build Model
+print("\n[2/6] Building CNN Model...")
+
+def create_cnn_model(num_classes, img_size):
+    model = keras.Sequential([
+        # Input layer
+        layers.Input(shape=(img_size, img_size, 3)),
+        
+        # Data augmentation (applied during training only)
+        layers.RandomFlip("horizontal"),
+        layers.RandomRotation(0.1),
+        layers.RandomZoom(0.1),
+        
+        # Block 1
+        layers.Conv2D(32, 3, padding='same', activation='relu'),
+        layers.Conv2D(32, 3, padding='same', activation='relu'),
+        layers.MaxPooling2D(2),
+        layers.BatchNormalization(),
+        
+        # Block 2
+        layers.Conv2D(64, 3, padding='same', activation='relu'),
+        layers.Conv2D(64, 3, padding='same', activation='relu'),
+        layers.MaxPooling2D(2),
+        layers.BatchNormalization(),
+        
+        # Block 3
+        layers.Conv2D(128, 3, padding='same', activation='relu'),
+        layers.Conv2D(128, 3, padding='same', activation='relu'),
+        layers.MaxPooling2D(2),
+        layers.BatchNormalization(),
+        
+        # Block 4
+        layers.Conv2D(256, 3, padding='same', activation='relu'),
+        layers.Conv2D(256, 3, padding='same', activation='relu'),
+        layers.MaxPooling2D(2),
+        layers.BatchNormalization(),
+        
+        # Classifier
+        layers.GlobalAveragePooling2D(),
+        layers.Dense(512, activation='relu'),
+        layers.Dropout(0.5),
+        layers.Dense(256, activation='relu'),
+        layers.Dropout(0.3),
+        layers.Dense(num_classes, activation='softmax')
+    ])
+    
+    return model
+
+model = create_cnn_model(num_classes, config.IMG_SIZE)
+print("✓ Model architecture created")
+
+# Step 3: Compile Model
+print("\n[3/6] Compiling Model...")
+
+model.compile(
+    optimizer=keras.optimizers.Adam(learning_rate=config.LEARNING_RATE),
+    loss='categorical_crossentropy',
+    metrics=['accuracy', keras.metrics.TopKCategoricalAccuracy(k=3, name='top_3_accuracy')]
+)
+
+model.summary()
+
+# Step 4: Setup Callbacks
+print("\n[4/6] Setting up Training Callbacks...")
+
+callbacks = [
+    keras.callbacks.EarlyStopping(
+        monitor='val_loss',
+        patience=5,
+        restore_best_weights=True,
+        verbose=1
+    ),
+    keras.callbacks.ReduceLROnPlateau(
+        monitor='val_loss',
+        factor=0.5,
+        patience=3,
+        min_lr=1e-7,
+        verbose=1
+    ),
+    keras.callbacks.ModelCheckpoint(
+        os.path.join(config.MODEL_DIR, 'best_model.h5'),
+        monitor='val_accuracy',
+        save_best_only=True,
+        verbose=1
+    ),
+    keras.callbacks.CSVLogger(
+        os.path.join(config.RESULTS_DIR, 'training_log.csv')
+    )
+]
+
+print("✓ Callbacks configured")
+
+# Step 5: Train Model
+print("\n[5/6] Training Model...")
+print(f"Training for {config.EPOCHS} epochs...")
+print("=" * 60)
+
+history = model.fit(
+    train_generator,
+    epochs=config.EPOCHS,
+    validation_data=valid_generator,
+    callbacks=callbacks,
+    verbose=1
+)
+
+print("\n✓ Training completed!")
+
+# Step 6: Save and Evaluate
+print("\n[6/6] Saving Model and Generating Reports...")
+
+# Save final model
+final_model_path = os.path.join(config.MODEL_DIR, 'leaf_disease_model_final.h5')
+model.save(final_model_path)
+print(f"✓ Model saved to: {final_model_path}")
+
+# Plot Training History
+fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+
+# Accuracy
+axes[0, 0].plot(history.history['accuracy'], label='Training', linewidth=2)
+axes[0, 0].plot(history.history['val_accuracy'], label='Validation', linewidth=2)
+axes[0, 0].set_title('Model Accuracy', fontsize=14, fontweight='bold')
+axes[0, 0].set_xlabel('Epoch')
+axes[0, 0].set_ylabel('Accuracy')
+axes[0, 0].legend()
+axes[0, 0].grid(True, alpha=0.3)
+
+# Loss
+axes[0, 1].plot(history.history['loss'], label='Training', linewidth=2)
+axes[0, 1].plot(history.history['val_loss'], label='Validation', linewidth=2)
+axes[0, 1].set_title('Model Loss', fontsize=14, fontweight='bold')
+axes[0, 1].set_xlabel('Epoch')
+axes[0, 1].set_ylabel('Loss')
+axes[0, 1].legend()
+axes[0, 1].grid(True, alpha=0.3)
+
+# Top-3 Accuracy
+axes[1, 0].plot(history.history['top_3_accuracy'], label='Training', linewidth=2)
+axes[1, 0].plot(history.history['val_top_3_accuracy'], label='Validation', linewidth=2)
+axes[1, 0].set_title('Top-3 Accuracy', fontsize=14, fontweight='bold')
+axes[1, 0].set_xlabel('Epoch')
+axes[1, 0].set_ylabel('Top-3 Accuracy')
+axes[1, 0].legend()
+axes[1, 0].grid(True, alpha=0.3)
+
+# Learning Rate
+if 'lr' in history.history:
+    axes[1, 1].plot(history.history['lr'], linewidth=2, color='red')
+    axes[1, 1].set_title('Learning Rate', fontsize=14, fontweight='bold')
+    axes[1, 1].set_xlabel('Epoch')
+    axes[1, 1].set_ylabel('Learning Rate')
+    axes[1, 1].set_yscale('log')
+    axes[1, 1].grid(True, alpha=0.3)
+else:
+    axes[1, 1].text(0.5, 0.5, 'Learning Rate\nNot Available', 
+                    ha='center', va='center', fontsize=12)
+    axes[1, 1].axis('off')
+
+plt.tight_layout()
+plt.savefig(os.path.join(config.RESULTS_DIR, 'training_history.png'), dpi=300, bbox_inches='tight')
+print(f"✓ Training plots saved")
+
+# Evaluate on validation set
+print("\nFinal Evaluation on Validation Set:")
+val_loss, val_accuracy, val_top3_accuracy = model.evaluate(valid_generator, verbose=0)
+print(f"  Validation Loss: {val_loss:.4f}")
+print(f"  Validation Accuracy: {val_accuracy*100:.2f}%")
+print(f"  Top-3 Accuracy: {val_top3_accuracy*100:.2f}%")
+
+# Generate predictions for confusion matrix
+print("\nGenerating Confusion Matrix...")
+valid_generator.reset()
+y_pred = model.predict(valid_generator, verbose=1)
+y_pred_classes = np.argmax(y_pred, axis=1)
+y_true = valid_generator.classes
+
+# Confusion Matrix
+cm = confusion_matrix(y_true, y_pred_classes)
+
+# Plot confusion matrix (simplified - top 10 classes)
+plt.figure(figsize=(12, 10))
+top_n = min(10, num_classes)
+cm_top = cm[:top_n, :top_n]
+class_names_top = class_names[:top_n]
+
+sns.heatmap(cm_top, annot=True, fmt='d', cmap='Blues', 
+            xticklabels=class_names_top, yticklabels=class_names_top)
+plt.title('Confusion Matrix (Top 10 Classes)', fontsize=14, fontweight='bold')
+plt.ylabel('True Label')
+plt.xlabel('Predicted Label')
+plt.xticks(rotation=45, ha='right')
+plt.yticks(rotation=0)
+plt.tight_layout()
+plt.savefig(os.path.join(config.RESULTS_DIR, 'confusion_matrix_top10.png'), dpi=300, bbox_inches='tight')
+print(f"✓ Confusion matrix saved")
+
+# Classification Report
+report = classification_report(y_true, y_pred_classes, target_names=class_names)
+with open(os.path.join(config.RESULTS_DIR, 'classification_report.txt'), 'w') as f:
+    f.write(report)
+print(f"✓ Classification report saved")
+
+# Save training summary
+summary = {
+    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+    'config': {
+        'img_size': config.IMG_SIZE,
+        'batch_size': config.BATCH_SIZE,
+        'epochs': config.EPOCHS,
+        'learning_rate': config.LEARNING_RATE
+    },
+    'dataset': {
+        'num_classes': num_classes,
+        'train_samples': train_generator.samples,
+        'val_samples': valid_generator.samples
+    },
+    'final_metrics': {
+        'val_loss': float(val_loss),
+        'val_accuracy': float(val_accuracy),
+        'val_top3_accuracy': float(val_top3_accuracy)
+    }
+}
+
+with open(os.path.join(config.RESULTS_DIR, 'training_summary.json'), 'w') as f:
+    json.dump(summary, f, indent=2)
+
+print("\n" + "=" * 60)
+print("🎉 TRAINING COMPLETE!")
+print("=" * 60)
+print(f"End Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+print(f"\nModel Performance:")
+print(f"  ✓ Validation Accuracy: {val_accuracy*100:.2f}%")
+print(f"  ✓ Top-3 Accuracy: {val_top3_accuracy*100:.2f}%")
+print(f"\nFiles saved in:")
+print(f"  • {config.MODEL_DIR}/")
+print(f"  • {config.RESULTS_DIR}/")
+print("=" * 60)
