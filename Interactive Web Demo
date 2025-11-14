@@ -1,0 +1,251 @@
+Install: pip install gradio
+Run: python demo.py
+"""
+
+import gradio as gr
+import numpy as np
+from PIL import Image
+import tensorflow as tf
+from tensorflow import keras
+import json
+import os
+
+# Load model and class names
+MODEL_PATH = 'models/best_model.h5'
+CLASS_NAMES_PATH = 'models/class_names.json'
+
+print("🌿 Loading Leaf Disease Detection Model...")
+model = keras.models.load_model(MODEL_PATH)
+print("✓ Model loaded successfully!")
+
+with open(CLASS_NAMES_PATH, 'r') as f:
+    class_names = json.load(f)
+print(f"✓ {len(class_names)} disease classes loaded")
+
+IMG_SIZE = 224
+
+def format_class_name(class_name):
+    """Format class name for better readability"""
+    return class_name.replace('___', ' - ').replace('_', ' ')
+
+def predict_disease(image):
+    """
+    Predict disease from uploaded image
+    
+    Args:
+        image: PIL Image or numpy array
+        
+    Returns:
+        Dictionary of predictions for Gradio
+    """
+    if image is None:
+        return None
+    
+    # Convert to PIL Image if numpy array
+    if isinstance(image, np.ndarray):
+        image = Image.fromarray(image.astype('uint8'))
+    
+    # Preprocess
+    img = image.convert('RGB')
+    img = img.resize((IMG_SIZE, IMG_SIZE))
+    img_array = np.array(img) / 255.0
+    img_array = np.expand_dims(img_array, axis=0)
+    
+    # Predict
+    predictions = model.predict(img_array, verbose=0)[0]
+    
+    # Get top 5 predictions
+    top_5_idx = np.argsort(predictions)[-5:][::-1]
+    
+    # Format results for Gradio
+    results = {}
+    for idx in top_5_idx:
+        class_name = format_class_name(class_names[idx])
+        confidence = float(predictions[idx])
+        results[class_name] = confidence
+    
+    return results
+
+def get_disease_info(prediction_output):
+    """Generate information about the predicted disease"""
+    if not prediction_output:
+        return "Upload an image to see disease information."
+    
+    # Get top prediction
+    top_disease = max(prediction_output, key=prediction_output.get)
+    confidence = prediction_output[top_disease] * 100
+    
+    # Create info text
+    info = f"""
+### 🌿 Prediction Result
+
+**Detected Condition:** {top_disease}  
+**Confidence:** {confidence:.2f}%
+
+---
+
+### 📋 Interpretation:
+
+"""
+    
+    if confidence > 80:
+        info += "✅ **High Confidence** - The model is very confident about this prediction.\n\n"
+    elif confidence > 60:
+        info += "⚠️ **Moderate Confidence** - Consider getting a second opinion or checking other symptoms.\n\n"
+    else:
+        info += "❓ **Low Confidence** - The prediction is uncertain. Please consult an expert.\n\n"
+    
+    # Add recommendations based on disease type
+    if 'healthy' in top_disease.lower():
+        info += """
+### ✨ Good News!
+The leaf appears to be healthy. Continue with regular care and monitoring.
+
+**Recommendations:**
+- Maintain current care routine
+- Regular monitoring for early detection
+- Ensure proper nutrition and watering
+"""
+    else:
+        info += """
+### ⚠️ Disease Detected
+
+**Immediate Actions:**
+1. Isolate affected plants if possible
+2. Remove severely infected leaves
+3. Improve air circulation
+4. Adjust watering practices
+
+**Treatment Options:**
+- Apply appropriate fungicide/pesticide
+- Use organic treatments if preferred
+- Consult local agricultural extension
+- Monitor other plants for symptoms
+
+**Prevention:**
+- Practice crop rotation
+- Ensure proper spacing
+- Remove plant debris
+- Use disease-resistant varieties
+"""
+    
+    return info
+
+# Create example images info
+examples_info = """
+### 📸 How to Use:
+
+1. **Upload Image**: Click or drag an image of a plant leaf
+2. **Get Prediction**: The AI will analyze and show top predictions
+3. **View Details**: See confidence scores and recommendations
+
+### 💡 Tips for Best Results:
+
+- Use clear, well-lit photos
+- Focus on the leaf showing symptoms
+- Avoid blurry or dark images
+- Single leaf works best
+- Close-up shots preferred
+
+### 🌾 Supported Plants:
+
+Apple, Blueberry, Cherry, Corn, Grape, Orange, Peach, 
+Pepper, Potato, Raspberry, Soybean, Squash, Strawberry, Tomato
+"""
+
+# Create Gradio Interface
+with gr.Blocks(theme=gr.themes.Soft(), title="Leaf Disease Detection") as demo:
+    
+    gr.Markdown("""
+    # 🌿 Leaf Disease Detection System
+    ### AI-Powered Plant Health Analysis
+    
+    Upload an image of a plant leaf to detect diseases and get treatment recommendations.
+    """)
+    
+    with gr.Row():
+        with gr.Column(scale=1):
+            # Input
+            image_input = gr.Image(
+                label="Upload Leaf Image",
+                type="pil",
+                height=400
+            )
+            
+            predict_btn = gr.Button(
+                "🔍 Analyze Leaf",
+                variant="primary",
+                size="lg"
+            )
+            
+            gr.Markdown(examples_info)
+        
+        with gr.Column(scale=1):
+            # Outputs
+            prediction_output = gr.Label(
+                label="Top 5 Predictions",
+                num_top_classes=5
+            )
+            
+            info_output = gr.Markdown(
+                label="Disease Information",
+                value="Upload an image to see disease information."
+            )
+    
+    # Example images (if you have them)
+    gr.Markdown("### 📚 Example Images")
+    gr.Examples(
+        examples=[
+            # Add paths to example images here if available
+            # ["examples/tomato_healthy.jpg"],
+            # ["examples/tomato_blight.jpg"],
+        ],
+        inputs=image_input,
+        label="Try these examples"
+    )
+    
+    # Event handlers
+    predict_btn.click(
+        fn=predict_disease,
+        inputs=image_input,
+        outputs=prediction_output
+    )
+    
+    prediction_output.change(
+        fn=get_disease_info,
+        inputs=prediction_output,
+        outputs=info_output
+    )
+    
+    # Footer
+    gr.Markdown("""
+    ---
+    ### 📊 Model Information:
+    - **Architecture:** Deep Convolutional Neural Network (CNN)
+    - **Training Dataset:** PlantVillage (87,000+ images)
+    - **Classes:** 38 different plant diseases + healthy conditions
+    - **Accuracy:** ~96% on validation data
+    
+    ### ⚠️ Disclaimer:
+    This is an AI-based prediction tool. For critical decisions, always consult 
+    agricultural experts or plant pathologists.
+    
+    ---
+    *Developed for educational and research purposes*
+    """)
+
+# Launch the app
+if __name__ == "__main__":
+    print("\n" + "="*60)
+    print("🚀 Launching Leaf Disease Detection Web Interface")
+    print("="*60)
+    print("\nThe interface will open in your browser automatically.")
+    print("If not, navigate to the URL shown below.")
+    print("\nPress Ctrl+C to stop the server.\n")
+    
+    demo.launch(
+        share=True,  # Creates public link
+        server_name="0.0.0.0",  # Accessible from network
+        server_port=7860,
+        show_error=True
+    )
