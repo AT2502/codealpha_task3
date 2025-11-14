@@ -71,3 +71,5 @@ codealpha_task3/
 ├── README.md               # Project documentation
 ├── images/                 # Example images and assets
 └── ...                     # Additional scripts or models
+
+
